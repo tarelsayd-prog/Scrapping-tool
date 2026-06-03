@@ -28,7 +28,6 @@ def get_driver():
     # Spoofing user agent to help avoid bot detection
     options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36")
     
-    # Check if the system has Chromium installed (Streamlit Cloud uses Debian Linux)
     chromium_path = shutil.which('chromium')
     chromedriver_path = shutil.which('chromedriver')
     
@@ -144,24 +143,45 @@ def get_product_details(driver, url):
     
     return product_data
 
-# --- SCRAPING FUNCTION: SELLER PAGE URLS ---
-def extract_seller_urls(driver, seller_url):
-    driver.get(seller_url)
-    time.sleep(5) # Wait for page to load
-    
-    # Amazon search/seller pages list products in divs with a 'data-asin' attribute
-    items = driver.find_elements(By.CSS_SELECTOR, "div[data-asin]")
-    
+# --- SCRAPING FUNCTION: SELLER PAGE URLS (WITH PAGINATION) ---
+def extract_seller_urls(driver, seller_url, status_element):
     product_urls = []
-    for item in items:
-        asin = item.get_attribute("data-asin")
-        # Ensure it's a valid ASIN (usually 10 characters) and not empty
-        if asin and len(asin) > 5:
-            # Construct a clean, standardized Amazon Egypt URL
-            clean_url = f"https://www.amazon.eg/dp/{asin}"
-            product_urls.append(clean_url)
+    current_url = seller_url
+    page_num = 1
+    
+    while current_url:
+        status_element.text(f"Scraping page {page_num} of seller storefront...")
+        driver.get(current_url)
+        time.sleep(5) # Wait for page to load
+        
+        items = driver.find_elements(By.CSS_SELECTOR, "div[data-asin]")
+        
+        # Track if we found items on this page to prevent infinite loops if Amazon throws a captcha
+        page_items_count = 0 
+        
+        for item in items:
+            asin = item.get_attribute("data-asin")
+            if asin and len(asin) > 5:
+                clean_url = f"https://www.amazon.eg/dp/{asin}"
+                product_urls.append(clean_url)
+                page_items_count += 1
+                
+        if page_items_count == 0:
+            break # No products found on this page, break the loop
             
-    # Return unique URLs
+        try:
+            # Locate the "Next" page button
+            next_button = driver.find_elements(By.CSS_SELECTOR, "a.s-pagination-next")
+            
+            # Check if button exists AND isn't disabled (Amazon adds 's-pagination-disabled' to the last page)
+            if next_button and "s-pagination-disabled" not in next_button[0].get_attribute("class"):
+                current_url = next_button[0].get_attribute("href")
+                page_num += 1
+            else:
+                current_url = None # We hit the last page, end the loop
+        except Exception:
+            current_url = None # End loop on error
+            
     return list(dict.fromkeys(product_urls))
 
 
@@ -256,41 +276,42 @@ with tab1:
                 )
 
 # ==========================================
-# TAB 2: SELLER LINK EXTRACTOR
+# TAB 2: SELLER LINK EXTRACTOR (WITH PAGINATION)
 # ==========================================
 with tab2:
     st.markdown("### Extract Product Links from a Seller Storefront")
-    st.markdown("Paste an Amazon Seller page link (e.g., `https://www.amazon.eg/s?me=...`). The app will find all the ASINs on that specific page and generate clean product URLs for you to copy into Tab 1.")
+    st.markdown("Paste an Amazon Seller page link (e.g., `https://www.amazon.eg/s?me=...`). The app will flip through all the pages automatically and generate clean product URLs.")
     
     seller_input = st.text_input("Seller Storefront URL:")
     
-    if st.button("Extract Links", type="secondary"):
+    if st.button("Extract All Links", type="secondary"):
         if not seller_input:
             st.warning("Please enter a seller URL first.")
         else:
-            with st.spinner("Navigating to seller page and extracting ASINs..."):
+            with st.spinner("Initializing scraper..."):
                 driver = get_driver()
-                try:
-                    extracted_urls = extract_seller_urls(driver, seller_input)
+                
+            status_text = st.empty()
+            
+            try:
+                extracted_urls = extract_seller_urls(driver, seller_input, status_text)
+                
+                if extracted_urls:
+                    status_text.success(f"Successfully flipped through pages and extracted {len(extracted_urls)} product links!")
                     
-                    if extracted_urls:
-                        st.success(f"Successfully extracted {len(extracted_urls)} product links!")
-                        
-                        # Display them in a text area so the user can easily CTRL+C them
-                        formatted_urls = "\n".join(extracted_urls)
-                        st.text_area("Extracted URLs (Copy these into Tab 1):", value=formatted_urls, height=300)
-                        
-                        # Provide a quick CSV download option for the links
-                        df_links = pd.DataFrame(extracted_urls, columns=["URL"])
-                        csv_data = df_links.to_csv(index=False).encode('utf-8')
-                        st.download_button(
-                            label="📥 Download Links as CSV",
-                            data=csv_data,
-                            file_name="extracted_seller_links.csv",
-                            mime="text/csv"
-                        )
-                    else:
-                        st.warning("No product links were found on that page. Amazon might have blocked the request or the page structure is different.")
-                        
-                except Exception as e:
-                    st.error(f"An error occurred: {e}")
+                    formatted_urls = "\n".join(extracted_urls)
+                    st.text_area("Extracted URLs (Copy these into Tab 1):", value=formatted_urls, height=300)
+                    
+                    df_links = pd.DataFrame(extracted_urls, columns=["URL"])
+                    csv_data = df_links.to_csv(index=False).encode('utf-8')
+                    st.download_button(
+                        label="📥 Download Links as CSV",
+                        data=csv_data,
+                        file_name="extracted_seller_links.csv",
+                        mime="text/csv"
+                    )
+                else:
+                    status_text.warning("No product links were found. Amazon might have blocked the request or the page structure is different.")
+                    
+            except Exception as e:
+                status_text.error(f"An error occurred: {e}")
