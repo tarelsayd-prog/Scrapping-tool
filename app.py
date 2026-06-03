@@ -13,7 +13,7 @@ import shutil
 # --- PAGE CONFIGURATION ---
 st.set_page_config(page_title="Amazon Scraper", layout="wide")
 st.title("🛒 Amazon Egypt Product Scraper")
-st.markdown("Enter Amazon Egypt product URLs below to extract details and download them as an Excel file.")
+st.markdown("Enter Amazon Egypt product URLs below or upload a file to extract details and download them as an Excel file.")
 
 # --- SELENIUM HEADLESS SETUP ---
 @st.cache_resource
@@ -97,23 +97,68 @@ def get_product_details(driver, url):
     }
 
 # --- USER INTERFACE ---
-default_urls = "https://www.amazon.eg/dp/B0C6KTLVLM/ref?th=1&language=en_AE\nhttps://www.amazon.eg/dp/B091CZR4RC/ref?th=1&language=en_AE"
-urls_input = st.text_area("Paste Amazon URLs here (one per line):", value=default_urls, height=150)
+st.markdown("### 1. Input URLs")
+col1, col2 = st.columns(2)
+
+with col1:
+    urls_input = st.text_area("Paste Amazon URLs here (one per line):", height=150)
+
+with col2:
+    uploaded_file = st.file_uploader("Or upload an Excel or CSV file containing URLs", type=['csv', 'xlsx'])
+    st.caption("The app will look for a column named 'URL' or 'Link'. If not found, it will read the first column.")
+
+st.divider()
 
 if st.button("Start Scraping", type="primary"):
-    urls = [url.strip() for url in urls_input.split('\n') if url.strip()]
+    combined_urls = []
     
-    if not urls:
-        st.warning("Please enter at least one URL.")
+    # 1. Process Text Input
+    if urls_input:
+        text_urls = [url.strip() for url in urls_input.split('\n') if url.strip()]
+        combined_urls.extend(text_urls)
+        
+    # 2. Process File Upload
+    if uploaded_file is not None:
+        try:
+            if uploaded_file.name.endswith('.csv'):
+                df_input = pd.read_csv(uploaded_file)
+            else:
+                df_input = pd.read_excel(uploaded_file)
+                
+            # Attempt to find the correct column header
+            url_col = None
+            for col in df_input.columns:
+                if str(col).strip().lower() in ['url', 'urls', 'link', 'links']:
+                    url_col = col
+                    break
+            
+            # Extract URLs from the found column, or default to the first column
+            if url_col:
+                file_urls = df_input[url_col].dropna().astype(str).tolist()
+            else:
+                file_urls = df_input.iloc[:, 0].dropna().astype(str).tolist()
+                
+            combined_urls.extend([url.strip() for url in file_urls if url.strip()])
+            
+        except Exception as e:
+            st.error(f"Error reading the uploaded file: {e}")
+            st.stop()
+
+    # 3. Remove duplicates while preserving the order
+    final_urls = list(dict.fromkeys(combined_urls))
+    
+    if not final_urls:
+        st.warning("Please enter at least one URL or upload a valid file.")
     else:
+        st.info(f"Total unique URLs to scrape: **{len(final_urls)}**")
         results = []
         progress_bar = st.progress(0)
         status_text = st.empty()
         
         driver = get_driver()
         
-        for index, url in enumerate(urls):
-            status_text.text(f"Scraping {index + 1} of {len(urls)}: {url}")
+        for index, url in enumerate(final_urls):
+            status_text.text(f"Scraping {index + 1} of {len(final_urls)}: {url}")
             try:
                 data = get_product_details(driver, url)
                 results.append(data)
@@ -121,7 +166,7 @@ if st.button("Start Scraping", type="primary"):
                 st.error(f"Error scraping {url}: {e}")
             
             # Update progress bar
-            progress_bar.progress((index + 1) / len(urls))
+            progress_bar.progress((index + 1) / len(final_urls))
             
         status_text.text("Scraping complete!")
         
