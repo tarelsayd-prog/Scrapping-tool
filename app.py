@@ -12,8 +12,8 @@ import shutil
 import re
 
 # --- PAGE CONFIGURATION ---
-st.set_page_config(page_title="Amazon Scraper", layout="wide")
-st.title("🛒 Amazon Egypt Scraper Hub")
+st.set_page_config(page_title="Amazon Scraper Hub", layout="wide")
+st.title("🛒 Amazon Egypt Automated Scraper Hub")
 
 # --- SELENIUM HEADLESS SETUP ---
 @st.cache_resource
@@ -25,7 +25,6 @@ def get_driver():
     options.add_argument('--disable-gpu')
     options.add_argument('--window-size=1920,1080')
     options.add_argument('--disable-blink-features=AutomationControlled')
-    # Spoofing user agent to help avoid bot detection
     options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36")
     
     chromium_path = shutil.which('chromium')
@@ -37,10 +36,44 @@ def get_driver():
     else:
         service = Service(ChromeDriverManager().install())
         
-    driver = webdriver.Chrome(service=service, options=options)
-    return driver
+    return webdriver.Chrome(service=service, options=options)
 
-# --- IMAGE EXTRACTION (ROBUST VERSION) ---
+# --- LAYER 1: MULTI-PAGE SELLER LINK EXTRACTION ---
+def extract_seller_urls(driver, seller_url, status_element):
+    product_urls = []
+    current_url = seller_url
+    page_num = 1
+    
+    while current_url:
+        status_element.text(f"🏬 Storefront: Extracting page {page_num}...")
+        driver.get(current_url)
+        time.sleep(5)
+        
+        items = driver.find_elements(By.CSS_SELECTOR, "div[data-asin]")
+        page_items_count = 0 
+        
+        for item in items:
+            asin = item.get_attribute("data-asin")
+            if asin and len(asin) > 5:
+                product_urls.append(f"https://www.amazon.eg/dp/{asin}")
+                page_items_count += 1
+                
+        if page_items_count == 0:
+            break
+            
+        try:
+            next_button = driver.find_elements(By.CSS_SELECTOR, "a.s-pagination-next")
+            if next_button and "s-pagination-disabled" not in next_button[0].get_attribute("class"):
+                current_url = next_button[0].get_attribute("href")
+                page_num += 1
+            else:
+                current_url = None
+        except Exception:
+            current_url = None
+            
+    return list(dict.fromkeys(product_urls))
+
+# --- LAYER 2: ROBUST IMAGE EXTExtraction ---
 def get_real_amazon_images(driver):
     image_urls = []
     try:
@@ -69,15 +102,12 @@ def get_real_amazon_images(driver):
             for img in thumbnails:
                 src = img.get_attribute("src")
                 if src:
-                    high_res = re.sub(r"\._.*_\.", ".", src)
-                    image_urls.append(high_res)
+                    image_urls.append(re.sub(r"\._.*_\.", ".", src))
     except Exception:
         pass 
+    return list(set([img for img in image_urls if img and img != "null"]))[:7]
 
-    image_urls = list(set([img for img in image_urls if img and img != "null"]))
-    return image_urls[:7]
-
-# --- SCRAPING FUNCTION: PRODUCT DETAILS ---
+# --- LAYER 3: PRODUCT DEEP DETAILS SCRAPER ---
 def get_product_details(driver, url):
     driver.get(url)
     time.sleep(5)  
@@ -85,233 +115,122 @@ def get_product_details(driver, url):
     real_images = get_real_amazon_images(driver)
     soup = BeautifulSoup(driver.page_source, 'html.parser')
     
-    title = "None"
-    if driver.find_elements(By.CSS_SELECTOR, "#productTitle"):
-        title = driver.find_element(By.CSS_SELECTOR, "#productTitle").text.strip()
-
-    brand = "None"
-    if driver.find_elements(By.CSS_SELECTOR, "#bylineInfo"):
-        brand = driver.find_element(By.CSS_SELECTOR, "#bylineInfo").text.strip()
+    title = driver.find_element(By.CSS_SELECTOR, "#productTitle").text.strip() if driver.find_elements(By.CSS_SELECTOR, "#productTitle") else "None"
+    brand = driver.find_element(By.CSS_SELECTOR, "#bylineInfo").text.strip() if driver.find_elements(By.CSS_SELECTOR, "#bylineInfo") else "None"
     
     breadcrumb = []
     breadcrumb_el = driver.find_elements(By.CSS_SELECTOR, "#wayfinding-breadcrumbs_feature_div ul")
     if breadcrumb_el:
-        links = breadcrumb_el[0].find_elements(By.TAG_NAME, 'a')
-        breadcrumb = [a.text.strip() for a in links]
+        breadcrumb = [a.text.strip() for a in breadcrumb_el[0].find_elements(By.TAG_NAME, 'a')]
 
     about_items = []
     about_el = driver.find_elements(By.CSS_SELECTOR, "#feature-bullets ul")
     if about_el:
-        lis = about_el[0].find_elements(By.TAG_NAME, 'li')
-        about_items = [li.text.strip() for li in lis]
+        about_items = [li.text.strip() for li in about_el[0].find_elements(By.TAG_NAME, 'li')]
 
-    product_description = "None"
-    if driver.find_elements(By.CSS_SELECTOR, "#productDescription"):
-        product_description = driver.find_element(By.CSS_SELECTOR, "#productDescription").text.strip()
+    product_description = driver.find_element(By.CSS_SELECTOR, "#productDescription").text.strip() if driver.find_elements(By.CSS_SELECTOR, "#productDescription") else "None"
         
     details_dict = {}
-    details_rows = driver.find_elements(By.CSS_SELECTOR, "#detailBullets_feature_div li")
-    for row in details_rows:
+    for row in driver.find_elements(By.CSS_SELECTOR, "#detailBullets_feature_div li"):
         text = row.text.strip()
         if ":" in text:
             key, value = text.split(":", 1)
             details_dict[key.strip()] = value.strip()
 
     tech_specs_dict = {}
-    tech_rows = driver.find_elements(By.CSS_SELECTOR, "#productDetails_techSpec_section_1 tr")
-    for row in tech_rows:
+    for row in driver.find_elements(By.CSS_SELECTOR, "#productDetails_techSpec_section_1 tr"):
         try:
-            th = row.find_element(By.TAG_NAME, "th").text.strip()
-            td = row.find_element(By.TAG_NAME, "td").text.strip()
-            tech_specs_dict[th] = td
+            tech_specs_dict[row.find_element(By.TAG_NAME, "th").text.strip()] = row.find_element(By.TAG_NAME, "td").text.strip()
         except:
             pass
             
     images_dict = {f"Image {i+1}": img for i, img in enumerate(real_images)}
     
-    product_data = {
-        "URL": url,
-        "Title": title,
-        "Brand": brand,
-        "Breadcrumb": ", ".join(breadcrumb),
-        "About This Item": "; ".join(about_items),
-        "Product Description": product_description,
-        **images_dict,
-        **details_dict,
-        **tech_specs_dict
+    return {
+        "URL": url, "Title": title, "Brand": brand, "Breadcrumb": ", ".join(breadcrumb),
+        "About This Item": "; ".join(about_items), "Product Description": product_description,
+        **images_dict, **details_dict, **tech_specs_dict
     }
-    
-    return product_data
 
-# --- SCRAPING FUNCTION: SELLER PAGE URLS (WITH PAGINATION) ---
-def extract_seller_urls(driver, seller_url, status_element):
-    product_urls = []
-    current_url = seller_url
-    page_num = 1
-    
-    while current_url:
-        status_element.text(f"Scraping page {page_num} of seller storefront...")
-        driver.get(current_url)
-        time.sleep(5) # Wait for page to load
-        
-        items = driver.find_elements(By.CSS_SELECTOR, "div[data-asin]")
-        
-        # Track if we found items on this page to prevent infinite loops if Amazon throws a captcha
-        page_items_count = 0 
-        
-        for item in items:
-            asin = item.get_attribute("data-asin")
-            if asin and len(asin) > 5:
-                clean_url = f"https://www.amazon.eg/dp/{asin}"
-                product_urls.append(clean_url)
-                page_items_count += 1
-                
-        if page_items_count == 0:
-            break # No products found on this page, break the loop
-            
-        try:
-            # Locate the "Next" page button
-            next_button = driver.find_elements(By.CSS_SELECTOR, "a.s-pagination-next")
-            
-            # Check if button exists AND isn't disabled (Amazon adds 's-pagination-disabled' to the last page)
-            if next_button and "s-pagination-disabled" not in next_button[0].get_attribute("class"):
-                current_url = next_button[0].get_attribute("href")
-                page_num += 1
-            else:
-                current_url = None # We hit the last page, end the loop
-        except Exception:
-            current_url = None # End loop on error
-            
-    return list(dict.fromkeys(product_urls))
+# --- CONTROL USER INTERFACE ---
+st.markdown("### 🛠️ Configuration Panel")
+scrape_mode = st.selectbox(
+    "Choose Scrape Operation Mode:",
+    ["Option 1: Direct Product Scraping (Input URLs / Upload File)", 
+     "Option 2: Full Seller Storefront Scraping (Auto-extract Links + Scrape Details)"]
+)
 
+final_urls = []
 
-# --- USER INTERFACE: TABS ---
-tab1, tab2 = st.tabs(["📦 Scrape Product Details", "🏬 Extract Links from Seller"])
-
-# ==========================================
-# TAB 1: PRODUCT DETAILS SCRAPER
-# ==========================================
-with tab1:
-    st.markdown("### 1. Input Product URLs")
+# --- CONDITIONAL INTERFACE LAYOUT ---
+if "Option 1" in scrape_mode:
     col1, col2 = st.columns(2)
-
     with col1:
-        urls_input = st.text_area("Paste Amazon Product URLs here (one per line):", height=150)
-
+        urls_input = st.text_area("Paste Product URLs here (one per line):", height=150)
     with col2:
-        uploaded_file = st.file_uploader("Or upload an Excel or CSV file containing URLs", type=['csv', 'xlsx'])
-        st.caption("The app will look for a column named 'URL' or 'Link'. If not found, it will read the first column.")
+        uploaded_file = st.file_uploader("Or upload an Excel / CSV file containing URLs", type=['csv', 'xlsx'])
+else:
+    seller_input = st.text_input("Paste Amazon Seller Storefront URL (e.g., https://www.amazon.eg/s?me=...):")
 
-    st.divider()
+st.divider()
 
-    if st.button("Start Scraping Products", type="primary"):
+# --- EXECUTION ENGINE ---
+if st.button("Run Extraction Pipeline", type="primary"):
+    driver = get_driver()
+    status_text = st.empty()
+    
+    # Process Inputs based on chosen Dropdown Option
+    if "Option 1" in scrape_mode:
         combined_urls = []
-        
         if urls_input:
-            text_urls = [url.strip() for url in urls_input.split('\n') if url.strip()]
-            combined_urls.extend(text_urls)
-            
+            combined_urls.extend([url.strip() for url in urls_input.split('\n') if url.strip()])
         if uploaded_file is not None:
             try:
-                if uploaded_file.name.endswith('.csv'):
-                    df_input = pd.read_csv(uploaded_file)
-                else:
-                    df_input = pd.read_excel(uploaded_file)
-                    
-                url_col = None
-                for col in df_input.columns:
-                    if str(col).strip().lower() in ['url', 'urls', 'link', 'links']:
-                        url_col = col
-                        break
-                
-                if url_col:
-                    file_urls = df_input[url_col].dropna().astype(str).tolist()
-                else:
-                    file_urls = df_input.iloc[:, 0].dropna().astype(str).tolist()
-                    
-                combined_urls.extend([url.strip() for url in file_urls if url.strip()])
-                
+                df_input = pd.read_csv(uploaded_file) if uploaded_file.name.endswith('.csv') else pd.read_excel(uploaded_file)
+                url_col = next((col for col in df_input.columns if str(col).strip().lower() in ['url', 'urls', 'link', 'links']), df_input.columns[0])
+                combined_urls.extend([url.strip() for url in df_input[url_col].dropna().astype(str).tolist() if url.strip()])
             except Exception as e:
-                st.error(f"Error reading the uploaded file: {e}")
+                st.error(f"Error parsing uploaded file: {e}")
                 st.stop()
-
         final_urls = list(dict.fromkeys(combined_urls))
         
-        if not final_urls:
-            st.warning("Please enter at least one URL or upload a valid file.")
-        else:
-            st.info(f"Total unique URLs to scrape: **{len(final_urls)}**")
-            results = []
-            progress_bar = st.progress(0)
-            status_text = st.empty()
-            
-            driver = get_driver()
-            
-            for index, url in enumerate(final_urls):
-                status_text.text(f"Scraping {index + 1} of {len(final_urls)}: {url}")
-                try:
-                    data = get_product_details(driver, url)
-                    results.append(data)
-                except Exception as e:
-                    st.error(f"Error scraping {url}: {e}")
-                
-                progress_bar.progress((index + 1) / len(final_urls))
-                
-            status_text.text("Scraping complete!")
-            
-            if results:
-                df = pd.DataFrame(results)
-                st.success("Successfully scraped the data!")
-                st.dataframe(df) 
-                
-                buffer = io.BytesIO()
-                with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
-                    df.to_excel(writer, index=False, sheet_name='Scraped Data')
-                
-                st.download_button(
-                    label="📥 Download Data as Excel",
-                    data=buffer.getvalue(),
-                    file_name="amazon_dynamic_product_details.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                )
-
-# ==========================================
-# TAB 2: SELLER LINK EXTRACTOR (WITH PAGINATION)
-# ==========================================
-with tab2:
-    st.markdown("### Extract Product Links from a Seller Storefront")
-    st.markdown("Paste an Amazon Seller page link (e.g., `https://www.amazon.eg/s?me=...`). The app will flip through all the pages automatically and generate clean product URLs.")
-    
-    seller_input = st.text_input("Seller Storefront URL:")
-    
-    if st.button("Extract All Links", type="secondary"):
+    else: # Option 2 Execution
         if not seller_input:
-            st.warning("Please enter a seller URL first.")
-        else:
-            with st.spinner("Initializing scraper..."):
-                driver = get_driver()
-                
-            status_text = st.empty()
-            
+            st.warning("Please enter a valid seller URL.")
+            st.stop()
+        with st.spinner("Processing storefront mapping..."):
+            final_urls = extract_seller_urls(driver, seller_input, status_text)
+            st.info(f"🏬 Storefront Map Complete: Discovered **{len(final_urls)}** target products.")
+
+    # Core Detail Scraping Phase
+    if not final_urls:
+        st.warning("No operational URLs located. Check inputs.")
+    else:
+        results = []
+        progress_bar = st.progress(0)
+        
+        for index, url in enumerate(final_urls):
+            status_text.text(f"📦 Progress: Processing item {index + 1} of {len(final_urls)} → {url}")
             try:
-                extracted_urls = extract_seller_urls(driver, seller_input, status_text)
-                
-                if extracted_urls:
-                    status_text.success(f"Successfully flipped through pages and extracted {len(extracted_urls)} product links!")
-                    
-                    formatted_urls = "\n".join(extracted_urls)
-                    st.text_area("Extracted URLs (Copy these into Tab 1):", value=formatted_urls, height=300)
-                    
-                    df_links = pd.DataFrame(extracted_urls, columns=["URL"])
-                    csv_data = df_links.to_csv(index=False).encode('utf-8')
-                    st.download_button(
-                        label="📥 Download Links as CSV",
-                        data=csv_data,
-                        file_name="extracted_seller_links.csv",
-                        mime="text/csv"
-                    )
-                else:
-                    status_text.warning("No product links were found. Amazon might have blocked the request or the page structure is different.")
-                    
+                results.append(get_product_details(driver, url))
             except Exception as e:
-                status_text.error(f"An error occurred: {e}")
+                st.error(f"Failed asset pull on {url}: {e}")
+            progress_bar.progress((index + 1) / len(final_urls))
+            
+        status_text.success("✨ Processing pipeline finalized successfully!")
+        driver.quit()
+        
+        if results:
+            df = pd.DataFrame(results)
+            st.dataframe(df)
+            
+            buffer = io.BytesIO()
+            with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+                df.to_excel(writer, index=False, sheet_name='Master Catalog Data')
+            
+            st.download_button(
+                label="📥 Download Consolidated Master Dataset (Excel)",
+                data=buffer.getvalue(),
+                file_name="amazon_master_catalog_details.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
