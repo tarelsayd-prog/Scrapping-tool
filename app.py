@@ -9,11 +9,12 @@ from webdriver_manager.chrome import ChromeDriverManager
 import time
 import io
 import shutil
+import re
 
 # --- PAGE CONFIGURATION ---
 st.set_page_config(page_title="Amazon Scraper", layout="wide")
 st.title("🛒 Amazon Egypt Product Scraper")
-st.markdown("Enter Amazon Egypt product URLs below or upload a file to extract details and download them as an Excel file.")
+st.markdown("Enter Amazon Egypt product URLs below or upload a file to extract details, high-res images, and dynamic specs.")
 
 # --- SELENIUM HEADLESS SETUP ---
 @st.cache_resource
@@ -24,6 +25,7 @@ def get_driver():
     options.add_argument('--disable-dev-shm-usage')
     options.add_argument('--disable-gpu')
     options.add_argument('--window-size=1920,1080')
+    options.add_argument('--disable-blink-features=AutomationControlled')
     # Spoofing user agent to help avoid bot detection
     options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36")
     
@@ -42,59 +44,131 @@ def get_driver():
     driver = webdriver.Chrome(service=service, options=options)
     return driver
 
+# --- IMAGE EXTRACTION (ROBUST VERSION) ---
+def get_real_amazon_images(driver):
+    image_urls = []
+
+    try:
+        # Load images by interacting with thumbnails
+        thumbs = driver.find_elements(By.CSS_SELECTOR, "#altImages li img")
+        for t in thumbs:
+            try:
+                t.click()
+                time.sleep(0.3)
+            except:
+                pass
+
+        # Extract from JavaScript
+        scripts = driver.find_elements(By.TAG_NAME, "script")
+        for script in scripts:
+            content = script.get_attribute("innerHTML")
+
+            if content and "colorImages" in content:
+                hires = re.findall(r'"hiRes":"(https:[^"]+)"', content)
+                large = re.findall(r'"large":"(https:[^"]+)"', content)
+                main = re.findall(r'"mainUrl":"(https:[^"]+)"', content)
+
+                if hires:
+                    image_urls.extend(hires)
+                elif large:
+                    image_urls.extend(large)
+                elif main:
+                    image_urls.extend(main)
+                break
+
+        # Fallback: thumbnails parsing
+        if not image_urls:
+            thumbnails = driver.find_elements(By.CSS_SELECTOR, "#altImages img")
+            for img in thumbnails:
+                src = img.get_attribute("src")
+                if src:
+                    high_res = re.sub(r"\._.*_\.", ".", src)
+                    image_urls.append(high_res)
+
+    except Exception as e:
+        pass # Silently pass to avoid UI clutter on minor errors
+
+    # Clean duplicates and nulls
+    image_urls = list(set([img for img in image_urls if img and img != "null"]))
+    return image_urls[:7]
+
 # --- SCRAPING FUNCTION ---
 def get_product_details(driver, url):
     driver.get(url)
     time.sleep(5)  # Wait for JavaScript to load
     
+    # Fetch real images
+    real_images = get_real_amazon_images(driver)
+    
+    # HTML Parsing
     soup = BeautifulSoup(driver.page_source, 'html.parser')
     
-    # Extract Title
-    title_elements = driver.find_elements(By.CSS_SELECTOR, "#productTitle")
-    title = title_elements[0].text.strip() if title_elements else "None"
+    # Title
+    title = "None"
+    if driver.find_elements(By.CSS_SELECTOR, "#productTitle"):
+        title = driver.find_element(By.CSS_SELECTOR, "#productTitle").text.strip()
 
-    # Extract Brand
-    brand_elements = driver.find_elements(By.CSS_SELECTOR, "#bylineInfo")
-    brand = brand_elements[0].text.strip() if brand_elements else "None"
+    # Brand
+    brand = "None"
+    if driver.find_elements(By.CSS_SELECTOR, "#bylineInfo"):
+        brand = driver.find_element(By.CSS_SELECTOR, "#bylineInfo").text.strip()
     
-    # Extract Breadcrumb
-    breadcrumb_elements = driver.find_elements(By.CSS_SELECTOR, "#wayfinding-breadcrumbs_feature_div > ul")
-    breadcrumb_items = [item.text.strip() for item in breadcrumb_elements[0].find_elements(By.TAG_NAME, 'a')] if breadcrumb_elements else ["No breadcrumb found"]
+    # Breadcrumb
+    breadcrumb = []
+    breadcrumb_el = driver.find_elements(By.CSS_SELECTOR, "#wayfinding-breadcrumbs_feature_div ul")
+    if breadcrumb_el:
+        links = breadcrumb_el[0].find_elements(By.TAG_NAME, 'a')
+        breadcrumb = [a.text.strip() for a in links]
 
-    # Extract "About this item"
-    about_elements = driver.find_elements(By.CSS_SELECTOR, "#featurebullets_feature_div ul")
-    about_items = [item.text.strip() for item in about_elements[0].find_elements(By.TAG_NAME, 'li')] if about_elements else ["No about this item found"]
+    # About
+    about_items = []
+    about_el = driver.find_elements(By.CSS_SELECTOR, "#feature-bullets ul")
+    if about_el:
+        lis = about_el[0].find_elements(By.TAG_NAME, 'li')
+        about_items = [li.text.strip() for li in lis]
 
-    # Extract Image URL
-    img_element = soup.find('img', {'id': 'landingImage'})
-    image_url = img_element['src'] if img_element else 'N/A'
+    # Description
+    product_description = "None"
+    if driver.find_elements(By.CSS_SELECTOR, "#productDescription"):
+        product_description = driver.find_element(By.CSS_SELECTOR, "#productDescription").text.strip()
+        
+    # Details (Dynamic Extraction)
+    details_dict = {}
+    details_rows = driver.find_elements(By.CSS_SELECTOR, "#detailBullets_feature_div li")
+    for row in details_rows:
+        text = row.text.strip()
+        if ":" in text:
+            key, value = text.split(":", 1)
+            details_dict[key.strip()] = value.strip()
 
-    # Extract Product Details (First 10)
-    details = []
-    for i in range(1, 11):
-        detail = driver.find_elements(By.CSS_SELECTOR, f"#detailBullets_feature_div > ul > li:nth-child({i})")
-        details.append(detail[0].text.strip() if detail else "None")
+    # Tech Specs (Dynamic Extraction)
+    tech_specs_dict = {}
+    tech_rows = driver.find_elements(By.CSS_SELECTOR, "#productDetails_techSpec_section_1 tr")
+    for row in tech_rows:
+        try:
+            th = row.find_element(By.TAG_NAME, "th").text.strip()
+            td = row.find_element(By.TAG_NAME, "td").text.strip()
+            tech_specs_dict[th] = td
+        except:
+            pass
+            
+    # Convert images to dynamic columns
+    images_dict = {f"Image {i+1}": img for i, img in enumerate(real_images)}
     
-    # Extract Tech Specs (First 12)
-    tech_specs = []
-    for i in range(1, 13):
-        spec = driver.find_elements(By.CSS_SELECTOR, f"#productDetails_techSpec_section_1 > tbody > tr:nth-child({i})")
-        tech_specs.append(spec[0].text.strip() if spec else "None")
-    
-    # Extract Product Description
-    desc_elements = driver.find_elements(By.CSS_SELECTOR, "#productDescription")
-    product_description = desc_elements[0].text.strip() if desc_elements else "None"
-    
-    return {
-        "URL": url, "Title": title, "Brand": brand, "Breadcrumb": " > ".join(breadcrumb_items), 
-        "About This Item": " | ".join(about_items), "Image URL": image_url,
-        "Detail 1": details[0], "Detail 2": details[1], "Detail 3": details[2], "Detail 4": details[3], "Detail 5": details[4],
-        "Detail 6": details[5], "Detail 7": details[6], "Detail 8": details[7], "Detail 9": details[8], "Detail 10": details[9],
-        "Tech Spec 1": tech_specs[0], "Tech Spec 2": tech_specs[1], "Tech Spec 3": tech_specs[2], "Tech Spec 4": tech_specs[3],
-        "Tech Spec 5": tech_specs[4], "Tech Spec 6": tech_specs[5], "Tech Spec 7": tech_specs[6], "Tech Spec 8": tech_specs[7],
-        "Tech Spec 9": tech_specs[8], "Tech Spec 10": tech_specs[9], "Tech Spec 11": tech_specs[10], "Tech Spec 12": tech_specs[11],
-        "Product Description": product_description
+    # Assemble final dynamic dictionary
+    product_data = {
+        "URL": url,
+        "Title": title,
+        "Brand": brand,
+        "Breadcrumb": ", ".join(breadcrumb),
+        "About This Item": "; ".join(about_items),
+        "Product Description": product_description,
+        **images_dict,
+        **details_dict,
+        **tech_specs_dict
     }
+    
+    return product_data
 
 # --- USER INTERFACE ---
 st.markdown("### 1. Input URLs")
@@ -171,6 +245,7 @@ if st.button("Start Scraping", type="primary"):
         status_text.text("Scraping complete!")
         
         if results:
+            # Pandas automatically handles the dynamic dictionaries and creates columns for all unique keys
             df = pd.DataFrame(results)
             st.success("Successfully scraped the data!")
             st.dataframe(df) # Preview the data
@@ -184,6 +259,6 @@ if st.button("Start Scraping", type="primary"):
             st.download_button(
                 label="📥 Download Data as Excel",
                 data=buffer.getvalue(),
-                file_name="amazon_product_details.xlsx",
+                file_name="amazon_dynamic_product_details.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
