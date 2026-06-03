@@ -8,6 +8,7 @@ from selenium.webdriver.chrome.options import Options
 from webdriver_manager.chrome import ChromeDriverManager
 import time
 import io
+import shutil
 
 # --- PAGE CONFIGURATION ---
 st.set_page_config(page_title="Amazon Scraper", layout="wide")
@@ -26,7 +27,18 @@ def get_driver():
     # Spoofing user agent to help avoid bot detection
     options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36")
     
-    service = Service(ChromeDriverManager().install())
+    # Check if the system has Chromium installed (Streamlit Cloud uses Debian Linux)
+    chromium_path = shutil.which('chromium')
+    chromedriver_path = shutil.which('chromedriver')
+    
+    if chromium_path and chromedriver_path:
+        # If found, force Selenium to use these exact files to prevent version crashes
+        options.binary_location = chromium_path
+        service = Service(chromedriver_path)
+    else:
+        # Fallback to the webdriver-manager if you ever run this locally on your own computer
+        service = Service(ChromeDriverManager().install())
+        
     driver = webdriver.Chrome(service=service, options=options)
     return driver
 
