@@ -16,7 +16,7 @@ st.set_page_config(page_title="Amazon Scraper Hub", layout="wide")
 st.title("🛒 Amazon Egypt Automated Scraper Hub")
 
 # --- SELENIUM HEADLESS SETUP ---
-@st.cache_resource
+# Removed @st.cache_resource to ensure a fresh, stable browser opens every time a team member clicks run
 def get_driver():
     options = Options()
     options.add_argument('--headless')
@@ -73,7 +73,7 @@ def extract_seller_urls(driver, seller_url, status_element):
             
     return list(dict.fromkeys(product_urls))
 
-# --- LAYER 2: ROBUST IMAGE EXTExtraction ---
+# --- LAYER 2: ROBUST IMAGE EXTRACTION ---
 def get_real_amazon_images(driver):
     image_urls = []
     try:
@@ -191,12 +191,14 @@ if st.button("Run Extraction Pipeline", type="primary"):
                 combined_urls.extend([url.strip() for url in df_input[url_col].dropna().astype(str).tolist() if url.strip()])
             except Exception as e:
                 st.error(f"Error parsing uploaded file: {e}")
+                driver.quit() # Safely close before stopping
                 st.stop()
         final_urls = list(dict.fromkeys(combined_urls))
         
     else: # Option 2 Execution
         if not seller_input:
             st.warning("Please enter a valid seller URL.")
+            driver.quit() # Safely close before stopping
             st.stop()
         with st.spinner("Processing storefront mapping..."):
             final_urls = extract_seller_urls(driver, seller_input, status_text)
@@ -205,6 +207,7 @@ if st.button("Run Extraction Pipeline", type="primary"):
     # Core Detail Scraping Phase
     if not final_urls:
         st.warning("No operational URLs located. Check inputs.")
+        driver.quit() # Safely close before exiting
     else:
         results = []
         progress_bar = st.progress(0)
@@ -218,6 +221,8 @@ if st.button("Run Extraction Pipeline", type="primary"):
             progress_bar.progress((index + 1) / len(final_urls))
             
         status_text.success("✨ Processing pipeline finalized successfully!")
+        
+        # Shut down the browser safely after all scraping is done
         driver.quit()
         
         if results:
