@@ -15,14 +15,15 @@ import re
 st.set_page_config(page_title="Amazon Scraper Hub", layout="wide")
 st.title("🛒 Amazon Egypt Automated Scraper Hub")
 
-# --- SELENIUM HEADLESS SETUP ---
-# Removed @st.cache_resource to ensure a fresh, stable browser opens every time a team member clicks run
+# --- SELENIUM HEADLESS SETUP (LOW MEMORY MODE) ---
 def get_driver():
     options = Options()
     options.add_argument('--headless')
     options.add_argument('--no-sandbox')
-    options.add_argument('--disable-dev-shm-usage')
+    options.add_argument('--disable-dev-shm-usage') # Crucial for low-RAM Linux servers
     options.add_argument('--disable-gpu')
+    options.add_argument('--disable-extensions')    # Strips out extra memory usage
+    options.add_argument('--disable-infobars')
     options.add_argument('--window-size=1920,1080')
     options.add_argument('--disable-blink-features=AutomationControlled')
     options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36")
@@ -160,8 +161,6 @@ scrape_mode = st.selectbox(
      "Option 2: Full Seller Storefront Scraping (Auto-extract Links + Scrape Details)"]
 )
 
-final_urls = []
-
 # --- CONDITIONAL INTERFACE LAYOUT ---
 if "Option 1" in scrape_mode:
     col1, col2 = st.columns(2)
@@ -176,10 +175,11 @@ st.divider()
 
 # --- EXECUTION ENGINE ---
 if st.button("Run Extraction Pipeline", type="primary"):
-    driver = get_driver()
     status_text = st.empty()
+    final_urls = []
+    should_continue = True
     
-    # Process Inputs based on chosen Dropdown Option
+    # 1. Process inputs BEFORE turning on the heavy browser to save memory
     if "Option 1" in scrape_mode:
         combined_urls = []
         if urls_input:
@@ -191,51 +191,62 @@ if st.button("Run Extraction Pipeline", type="primary"):
                 combined_urls.extend([url.strip() for url in df_input[url_col].dropna().astype(str).tolist() if url.strip()])
             except Exception as e:
                 st.error(f"Error parsing uploaded file: {e}")
-                driver.quit() # Safely close before stopping
-                st.stop()
-        final_urls = list(dict.fromkeys(combined_urls))
+                should_continue = False
         
-    else: # Option 2 Execution
+        final_urls = list(dict.fromkeys(combined_urls))
+        if not final_urls and should_continue:
+            st.warning("Please enter URLs or upload a valid file.")
+            should_continue = False
+            
+    else: # Option 2 Execution validation
         if not seller_input:
             st.warning("Please enter a valid seller URL.")
-            driver.quit() # Safely close before stopping
-            st.stop()
-        with st.spinner("Processing storefront mapping..."):
-            final_urls = extract_seller_urls(driver, seller_input, status_text)
-            st.info(f"🏬 Storefront Map Complete: Discovered **{len(final_urls)}** target products.")
+            should_continue = False
 
-    # Core Detail Scraping Phase
-    if not final_urls:
-        st.warning("No operational URLs located. Check inputs.")
-        driver.quit() # Safely close before exiting
-    else:
-        results = []
-        progress_bar = st.progress(0)
+    # 2. Start the heavy scraping engine ONLY if we have valid inputs
+    if should_continue:
+        driver = get_driver() # Turn on the browser
         
-        for index, url in enumerate(final_urls):
-            status_text.text(f"📦 Progress: Processing item {index + 1} of {len(final_urls)} → {url}")
-            try:
-                results.append(get_product_details(driver, url))
-            except Exception as e:
-                st.error(f"Failed asset pull on {url}: {e}")
-            progress_bar.progress((index + 1) / len(final_urls))
-            
-        status_text.success("✨ Processing pipeline finalized successfully!")
+        try: # << CRITICAL: This try block ensures the browser ALWAYS closes, preventing memory crashes
         
-        # Shut down the browser safely after all scraping is done
-        driver.quit()
-        
-        if results:
-            df = pd.DataFrame(results)
-            st.dataframe(df)
-            
-            buffer = io.BytesIO()
-            with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
-                df.to_excel(writer, index=False, sheet_name='Master Catalog Data')
-            
-            st.download_button(
-                label="📥 Download Consolidated Master Dataset (Excel)",
-                data=buffer.getvalue(),
-                file_name="amazon_master_catalog_details.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
+            if "Option 2" in scrape_mode:
+                with st.spinner("Processing storefront mapping..."):
+                    final_urls = extract_seller_urls(driver, seller_input, status_text)
+                    st.info(f"🏬 Storefront Map Complete: Discovered **{len(final_urls)}** target products.")
+
+            # Core Detail Scraping Phase
+            if not final_urls:
+                st.warning("No operational URLs located. Check inputs.")
+            else:
+                results = []
+                progress_bar = st.progress(0)
+                
+                for index, url in enumerate(final_urls):
+                    status_text.text(f"📦 Progress: Processing item {index + 1} of {len(final_urls)} → {url}")
+                    try:
+                        results.append(get_product_details(driver, url))
+                    except Exception as e:
+                        st.error(f"Failed asset pull on {url}: {e}")
+                    progress_bar.progress((index + 1) / len(final_urls))
+                    
+                status_text.success("✨ Processing pipeline finalized successfully!")
+                
+                if results:
+                    df = pd.DataFrame(results)
+                    st.dataframe(df)
+                    
+                    buffer = io.BytesIO()
+                    with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+                        df.to_excel(writer, index=False, sheet_name='Master Catalog Data')
+                    
+                    st.download_button(
+                        label="📥 Download Consolidated Master Dataset (Excel)",
+                        data=buffer.getvalue(),
+                        file_name="amazon_master_catalog_details.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                    )
+                    
+        finally:
+            # << CRITICAL: No matter what happens above (success, crash, user cancellation)
+            # This line will run and destroy the hidden browser to free up Streamlit's 1GB RAM limit.
+            driver.quit()
