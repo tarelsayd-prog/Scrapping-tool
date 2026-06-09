@@ -10,10 +10,38 @@ import time
 import io
 import shutil
 import re
+import gc
 
 # --- PAGE CONFIGURATION ---
 st.set_page_config(page_title="Amazon Scraper Hub", layout="wide")
-st.title("🛒 Amazon Egypt Automated Scraper Hub")
+st.title("🛒 Amazon Global Automated Scraper")
+
+# --- AMAZON GLOBAL DOMAINS ---
+AMAZON_DOMAINS = {
+    "Egypt (.eg)": "www.amazon.eg",
+    "United States (.com)": "www.amazon.com",
+    "Canada (.ca)": "www.amazon.ca",
+    "Mexico (.com.mx)": "www.amazon.com.mx",
+    "Brazil (.com.br)": "www.amazon.com.br",
+    "United Kingdom (.co.uk)": "www.amazon.co.uk",
+    "Germany (.de)": "www.amazon.de",
+    "France (.fr)": "www.amazon.fr",
+    "Spain (.es)": "www.amazon.es",
+    "Italy (.it)": "www.amazon.it",
+    "Netherlands (.nl)": "www.amazon.nl",
+    "Poland (.pl)": "www.amazon.pl",
+    "Sweden (.se)": "www.amazon.se",
+    "Ireland (.ie)": "www.amazon.ie",
+    "Belgium (.com.be)": "www.amazon.com.be",
+    "Turkey (.com.tr)": "www.amazon.com.tr",
+    "United Arab Emirates (.ae)": "www.amazon.ae",
+    "Saudi Arabia (.sa)": "www.amazon.sa",
+    "South Africa (.co.za)": "www.amazon.co.za",
+    "India (.in)": "www.amazon.in",
+    "Singapore (.sg)": "www.amazon.sg",
+    "Japan (.co.jp)": "www.amazon.co.jp",
+    "Australia (.com.au)": "www.amazon.com.au"
+}
 
 # --- SELENIUM HEADLESS SETUP (LOW MEMORY MODE) ---
 def get_driver():
@@ -56,6 +84,7 @@ def extract_seller_urls(driver, seller_url, status_element):
         for item in items:
             asin = item.get_attribute("data-asin")
             if asin and len(asin) > 5:
+                # Extract links based on the Egyptian storefront domain for Option 2
                 product_urls.append(f"https://www.amazon.eg/dp/{asin}")
                 page_items_count += 1
                 
@@ -161,13 +190,22 @@ scrape_mode = st.selectbox(
      "Option 2: Full Seller Storefront Scraping (Auto-extract Links + Scrape Details)"]
 )
 
+input_format = "Full URLs"
+selected_domain = "www.amazon.eg"
+
 # --- CONDITIONAL INTERFACE LAYOUT ---
 if "Option 1" in scrape_mode:
+    input_format = st.radio("Input Type:", ["Full URLs", "ASINs"], horizontal=True)
+    
+    if input_format == "ASINs":
+        region_name = st.selectbox("Select Amazon Region for ASINs:", list(AMAZON_DOMAINS.keys()), index=0)
+        selected_domain = AMAZON_DOMAINS[region_name]
+
     col1, col2 = st.columns(2)
     with col1:
-        urls_input = st.text_area("Paste Product URLs here (one per line):", height=150)
+        urls_input = st.text_area(f"Paste {input_format} here (one per line):", height=150)
     with col2:
-        uploaded_file = st.file_uploader("Or upload an Excel / CSV file containing URLs", type=['csv', 'xlsx'])
+        uploaded_file = st.file_uploader(f"Or upload an Excel / CSV file containing {input_format}", type=['csv', 'xlsx'])
 else:
     seller_input = st.text_input("Paste Amazon Seller Storefront URL (e.g., https://www.amazon.eg/s?me=...):")
 
@@ -179,23 +217,34 @@ if st.button("Run Extraction Pipeline", type="primary"):
     final_urls = []
     should_continue = True
     
-    # 1. Process inputs BEFORE turning on the heavy browser to save memory
+    # 1. Input Processing Phase (No browser needed yet)
     if "Option 1" in scrape_mode:
-        combined_urls = []
+        raw_inputs = []
         if urls_input:
-            combined_urls.extend([url.strip() for url in urls_input.split('\n') if url.strip()])
+            raw_inputs.extend([val.strip() for val in urls_input.split('\n') if val.strip()])
+            
         if uploaded_file is not None:
             try:
                 df_input = pd.read_csv(uploaded_file) if uploaded_file.name.endswith('.csv') else pd.read_excel(uploaded_file)
-                url_col = next((col for col in df_input.columns if str(col).strip().lower() in ['url', 'urls', 'link', 'links']), df_input.columns[0])
-                combined_urls.extend([url.strip() for url in df_input[url_col].dropna().astype(str).tolist() if url.strip()])
+                col_names_to_check = ['url', 'urls', 'link', 'links', 'asin', 'asins']
+                val_col = next((col for col in df_input.columns if str(col).strip().lower() in col_names_to_check), df_input.columns[0])
+                raw_inputs.extend([str(val).strip() for val in df_input[val_col].dropna().tolist() if str(val).strip()])
             except Exception as e:
                 st.error(f"Error parsing uploaded file: {e}")
                 should_continue = False
         
+        # Convert ASINs to full URLs based on the selected region
+        combined_urls = []
+        if input_format == "ASINs":
+            for val in raw_inputs:
+                clean_asin = val.split('/')[-1] if 'amazon' in val.lower() else val
+                combined_urls.append(f"https://{selected_domain}/dp/{clean_asin}")
+        else:
+            combined_urls = raw_inputs
+
         final_urls = list(dict.fromkeys(combined_urls))
         if not final_urls and should_continue:
-            st.warning("Please enter URLs or upload a valid file.")
+            st.warning(f"Please enter {input_format} or upload a valid file.")
             should_continue = False
             
     else: # Option 2 Execution validation
@@ -203,50 +252,56 @@ if st.button("Run Extraction Pipeline", type="primary"):
             st.warning("Please enter a valid seller URL.")
             should_continue = False
 
-    # 2. Start the heavy scraping engine ONLY if we have valid inputs
+    # 2. Main Scrape Engine 
     if should_continue:
-        driver = get_driver() # Turn on the browser
         
-        try: # << CRITICAL: This try block ensures the browser ALWAYS closes, preventing memory crashes
-        
-            if "Option 2" in scrape_mode:
+        # Phase A: Get list of store URLs if using Option 2
+        if "Option 2" in scrape_mode:
+            storefront_driver = get_driver()
+            try:
                 with st.spinner("Processing storefront mapping..."):
-                    final_urls = extract_seller_urls(driver, seller_input, status_text)
+                    final_urls = extract_seller_urls(storefront_driver, seller_input, status_text)
                     st.info(f"🏬 Storefront Map Complete: Discovered **{len(final_urls)}** target products.")
+            finally:
+                storefront_driver.quit() # Close browser after mapping
+                gc.collect()
 
-            # Core Detail Scraping Phase
-            if not final_urls:
-                st.warning("No operational URLs located. Check inputs.")
-            else:
-                results = []
-                progress_bar = st.progress(0)
+        # Phase B: Deep Detail Scraping (EXTREME MEMORY SAVER)
+        if not final_urls:
+            st.warning("No operational URLs located. Check inputs.")
+        else:
+            results = []
+            progress_bar = st.progress(0)
+            
+            for index, url in enumerate(final_urls):
+                status_text.text(f"📦 Progress: Processing item {index + 1} of {len(final_urls)} → {url}")
                 
-                for index, url in enumerate(final_urls):
-                    status_text.text(f"📦 Progress: Processing item {index + 1} of {len(final_urls)} → {url}")
-                    try:
-                        results.append(get_product_details(driver, url))
-                    except Exception as e:
-                        st.error(f"Failed asset pull on {url}: {e}")
-                    progress_bar.progress((index + 1) / len(final_urls))
-                    
-                status_text.success("✨ Processing pipeline finalized successfully!")
+                # CRITICAL: Open a clean browser instance for EVERY single page
+                single_driver = get_driver()
+                try:
+                    results.append(get_product_details(single_driver, url))
+                except Exception as e:
+                    st.error(f"Failed asset pull on {url}: {e}")
+                finally:
+                    # CRITICAL: Instantly kill the browser and wipe memory after each item
+                    single_driver.quit()
+                    gc.collect()
                 
-                if results:
-                    df = pd.DataFrame(results)
-                    st.dataframe(df)
-                    
-                    buffer = io.BytesIO()
-                    with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
-                        df.to_excel(writer, index=False, sheet_name='Master Catalog Data')
-                    
-                    st.download_button(
-                        label="📥 Download Consolidated Master Dataset (Excel)",
-                        data=buffer.getvalue(),
-                        file_name="amazon_master_catalog_details.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                    )
-                    
-        finally:
-            # << CRITICAL: No matter what happens above (success, crash, user cancellation)
-            # This line will run and destroy the hidden browser to free up Streamlit's 1GB RAM limit.
-            driver.quit()
+                progress_bar.progress((index + 1) / len(final_urls))
+                
+            status_text.success("✨ Processing pipeline finalized successfully!")
+            
+            if results:
+                df = pd.DataFrame(results)
+                st.dataframe(df)
+                
+                buffer = io.BytesIO()
+                with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+                    df.to_excel(writer, index=False, sheet_name='Master Catalog Data')
+                
+                st.download_button(
+                    label="📥 Download Consolidated Master Dataset (Excel)",
+                    data=buffer.getvalue(),
+                    file_name="amazon_master_catalog_details.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
