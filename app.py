@@ -10,39 +10,59 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 import time
 import io
-import shutil
 import re
 import gc
 import os
 import random
 
-# --- CONFIG ---
+# ================= CONFIG =================
 st.set_page_config(page_title="Amazon Scraper PRO", layout="wide")
-st.title("🛒 Amazon Scraper PRO (Stable Version)")
+st.title("🛒 Amazon Global Scraper PRO")
 
 TEMP_FILE = "temp_progress.xlsx"
 
-# --- DRIVER SETUP ---
+# ================= AMAZON DOMAINS =================
+AMAZON_DOMAINS = {
+    "Egypt 🇪🇬 (.eg)": "www.amazon.eg",
+    "USA 🇺🇸 (.com)": "www.amazon.com",
+    "UK 🇬🇧 (.co.uk)": "www.amazon.co.uk",
+    "UAE 🇦🇪 (.ae)": "www.amazon.ae",
+    "Saudi 🇸🇦 (.sa)": "www.amazon.sa",
+    "Germany 🇩🇪 (.de)": "www.amazon.de",
+    "France 🇫🇷 (.fr)": "www.amazon.fr",
+    "Italy 🇮🇹 (.it)": "www.amazon.it",
+    "Spain 🇪🇸 (.es)": "www.amazon.es",
+    "Netherlands 🇳🇱 (.nl)": "www.amazon.nl",
+    "Poland 🇵🇱 (.pl)": "www.amazon.pl",
+    "Sweden 🇸🇪 (.se)": "www.amazon.se",
+    "Turkey 🇹🇷 (.com.tr)": "www.amazon.com.tr",
+    "India 🇮🇳 (.in)": "www.amazon.in",
+    "Japan 🇯🇵 (.co.jp)": "www.amazon.co.jp",
+    "Canada 🇨🇦 (.ca)": "www.amazon.ca",
+    "Australia 🇦🇺 (.com.au)": "www.amazon.com.au",
+    "Singapore 🇸🇬 (.sg)": "www.amazon.sg",
+    "Brazil 🇧🇷 (.com.br)": "www.amazon.com.br",
+    "Mexico 🇲🇽 (.com.mx)": "www.amazon.com.mx",
+    "South Africa 🇿🇦 (.co.za)": "www.amazon.co.za"
+}
+
+# ================= DRIVER =================
 def get_driver():
     options = Options()
-    # ⚠️ Headless OFF for better scraping
-    # options.add_argument('--headless')
-
+    # options.add_argument('--headless')  # disable if blocked
     options.add_argument('--no-sandbox')
     options.add_argument('--disable-dev-shm-usage')
     options.add_argument('--disable-gpu')
     options.add_argument('--window-size=1920,1080')
     options.add_argument("--disable-blink-features=AutomationControlled")
-    options.add_argument(
-        "user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
-    )
+    options.add_argument("user-agent=Mozilla/5.0")
 
     return webdriver.Chrome(
         service=Service(ChromeDriverManager().install()),
         options=options
     )
 
-# --- WAIT ---
+# ================= HELPERS =================
 def wait_for_page(driver):
     try:
         WebDriverWait(driver, 10).until(
@@ -51,7 +71,6 @@ def wait_for_page(driver):
     except:
         pass
 
-# --- SAFE TEXT ---
 def get_text(driver, selectors):
     for sel in selectors:
         try:
@@ -62,52 +81,49 @@ def get_text(driver, selectors):
             continue
     return ""
 
-# --- IMAGES ---
-def get_real_amazon_images(driver):
-    image_urls = set()
+def build_product_url(asin, domain):
+    return f"https://{domain}/dp/{asin}"
 
-    # Dynamic images
-    imgs = driver.find_elements(By.CSS_SELECTOR, "img")
-    for img in imgs:
+def build_urls_from_asins(asins, domain):
+    return [build_product_url(a.strip().split("/")[-1], domain) for a in asins]
+
+def clean_urls(urls):
+    asins = []
+    for url in urls:
+        if "/dp/" in url:
+            asin = url.split("/dp/")[1].split("/")[0]
+            asins.append(asin)
+    return asins
+
+# ================= IMAGES =================
+def get_images(driver):
+    images = set()
+
+    for img in driver.find_elements(By.CSS_SELECTOR, "img"):
         data = img.get_attribute("data-a-dynamic-image")
         if data:
             matches = re.findall(r'"(https:[^"]+)"', data)
-            image_urls.update(matches)
+            images.update(matches)
 
-    # Thumbnails fallback
-    thumbs = driver.find_elements(By.CSS_SELECTOR, "#altImages img")
-    for img in thumbs:
+    for img in driver.find_elements(By.CSS_SELECTOR, "#altImages img"):
         src = img.get_attribute("src")
         if src:
-            clean = re.sub(r"\._.*_\.", ".", src)
-            image_urls.add(clean)
+            images.add(re.sub(r"\._.*_\.", ".", src))
 
-    return list(image_urls)[:7]
+    return list(images)[:7]
 
-# --- PRODUCT SCRAPER ---
-def get_product_details(driver, url):
+# ================= PRODUCT =================
+def get_product(driver, url):
     driver.get(url)
     wait_for_page(driver)
-
     time.sleep(random.uniform(2, 4))
 
     title = get_text(driver, ["#productTitle"])
     brand = get_text(driver, ["#bylineInfo", "#brand"])
 
-    breadcrumb = []
-    try:
-        breadcrumb = [
-            a.text.strip()
-            for a in driver.find_elements(By.CSS_SELECTOR, "#wayfinding-breadcrumbs_feature_div a")
-        ]
-    except:
-        pass
+    breadcrumb = [a.text.strip() for a in driver.find_elements(By.CSS_SELECTOR, "#wayfinding-breadcrumbs_feature_div a")]
 
-    about = []
-    for li in driver.find_elements(By.CSS_SELECTOR, "#feature-bullets li"):
-        txt = li.text.strip()
-        if txt:
-            about.append(txt)
+    bullets = [li.text.strip() for li in driver.find_elements(By.CSS_SELECTOR, "#feature-bullets li") if li.text.strip()]
 
     description = get_text(driver, [
         "#productDescription",
@@ -115,85 +131,106 @@ def get_product_details(driver, url):
         "#feature-bullets"
     ])
 
-    images = get_real_amazon_images(driver)
-
-    details = {}
-    for row in driver.find_elements(By.CSS_SELECTOR, "#detailBullets_feature_div li"):
-        txt = row.text.strip()
-        if ":" in txt:
-            k, v = txt.split(":", 1)
-            details[k.strip()] = v.strip()
-
-    specs = {}
-    for row in driver.find_elements(By.CSS_SELECTOR, "#productDetails_techSpec_section_1 tr"):
-        try:
-            specs[row.find_element(By.TAG_NAME, "th").text.strip()] = \
-                row.find_element(By.TAG_NAME, "td").text.strip()
-        except:
-            pass
-
-    images_dict = {f"Image {i+1}": img for i, img in enumerate(images)}
+    images = get_images(driver)
 
     return {
         "URL": url,
         "Title": title,
         "Brand": brand,
         "Breadcrumb": ", ".join(breadcrumb),
-        "About": "; ".join(about),
+        "About": "; ".join(bullets),
         "Description": description,
-        **images_dict,
-        **details,
-        **specs
+        **{f"Image {i+1}": img for i, img in enumerate(images)}
     }
 
-# --- RETRY ---
-def safe_scrape(url):
-    for _ in range(2):
-        driver = get_driver()
+# ================= SELLER =================
+def extract_seller(driver, seller_url, domain):
+    urls = []
+    page = seller_url
+
+    while page:
+        driver.get(page)
+        time.sleep(4)
+
+        items = driver.find_elements(By.CSS_SELECTOR, "div[data-asin]")
+        for item in items:
+            asin = item.get_attribute("data-asin")
+            if asin:
+                urls.append(build_product_url(asin, domain))
+
         try:
-            data = get_product_details(driver, url)
-            driver.quit()
-            return data
+            next_btn = driver.find_element(By.CSS_SELECTOR, "a.s-pagination-next")
+            if "disabled" in next_btn.get_attribute("class"):
+                break
+            page = next_btn.get_attribute("href")
         except:
-            driver.quit()
-    return {"URL": url}
+            break
 
-# --- UI ---
-urls_input = st.text_area("Paste Amazon URLs (one per line):")
+    return list(set(urls))
 
-if st.button("🚀 Start Scraping"):
+# ================= UI =================
+mode = st.selectbox("Mode", ["ASINs", "Product URLs", "Seller Store"])
 
-    urls = [u.strip() for u in urls_input.split("\n") if u.strip()]
+country = st.selectbox("Country", list(AMAZON_DOMAINS.keys()))
+domain = AMAZON_DOMAINS[country]
 
-    if not urls:
-        st.warning("Enter URLs first")
+if mode == "Seller Store":
+    seller_url = st.text_input("Seller URL")
+else:
+    user_input = st.text_area("Input (one per line)")
+
+# ================= RUN =================
+if st.button("🚀 Start"):
+
+    final_urls = []
+
+    if mode == "ASINs":
+        asins = [x.strip() for x in user_input.split("\n") if x.strip()]
+        final_urls = build_urls_from_asins(asins, domain)
+
+    elif mode == "Product URLs":
+        urls = [x.strip() for x in user_input.split("\n") if x.strip()]
+        asins = clean_urls(urls)
+        final_urls = build_urls_from_asins(asins, domain)
+
+    elif mode == "Seller Store":
+        driver = get_driver()
+        final_urls = extract_seller(driver, seller_url, domain)
+        driver.quit()
+
+    if not final_urls:
+        st.warning("No URLs found")
         st.stop()
 
-    # --- RESUME ---
+    # ===== RESUME =====
     if os.path.exists(TEMP_FILE):
-        existing_df = pd.read_excel(TEMP_FILE)
-        done_urls = set(existing_df["URL"].tolist())
-        urls = [u for u in urls if u not in done_urls]
-        results = existing_df.to_dict("records")
-        st.info(f"Resuming: {len(done_urls)} already done")
+        df_old = pd.read_excel(TEMP_FILE)
+        done = set(df_old["URL"])
+        final_urls = [u for u in final_urls if u not in done]
+        results = df_old.to_dict("records")
+        st.info(f"Resuming... {len(done)} already done")
     else:
         results = []
 
     progress = st.progress(0)
 
-    for i, url in enumerate(urls):
-        st.write(f"Processing {i+1}/{len(urls)}")
+    for i, url in enumerate(final_urls):
+        st.write(f"{i+1}/{len(final_urls)}")
 
-        data = safe_scrape(url)
-        results.append(data)
+        for _ in range(2):
+            driver = get_driver()
+            try:
+                data = get_product(driver, url)
+                results.append(data)
+                driver.quit()
+                break
+            except:
+                driver.quit()
 
-        # SAVE PROGRESS EVERY ITEM
         pd.DataFrame(results).to_excel(TEMP_FILE, index=False)
 
-        progress.progress((i + 1) / len(urls))
+        progress.progress((i + 1) / len(final_urls))
         gc.collect()
-
-    st.success("✅ Done!")
 
     df = pd.DataFrame(results)
     st.dataframe(df)
@@ -201,8 +238,4 @@ if st.button("🚀 Start Scraping"):
     buffer = io.BytesIO()
     df.to_excel(buffer, index=False)
 
-    st.download_button(
-        "📥 Download Excel",
-        buffer.getvalue(),
-        "amazon_results.xlsx"
-    )
+    st.download_button("📥 Download Excel", buffer.getvalue(), "amazon.xlsx")
