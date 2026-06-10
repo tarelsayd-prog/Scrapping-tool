@@ -1,6 +1,5 @@
 import streamlit as st
 import pandas as pd
-from bs4 import BeautifulSoup
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.service import Service
@@ -16,12 +15,12 @@ import os
 import random
 
 # ================= CONFIG =================
-st.set_page_config(page_title="Amazon Scraper PRO", layout="wide")
-st.title("🛒 Amazon Global Scraper PRO")
+st.set_page_config(page_title="Amazon Scraper", layout="wide")
+st.title("🛒 Amazon Scraper")
 
 TEMP_FILE = "temp_progress.xlsx"
 
-# ================= AMAZON DOMAINS =================
+# ================= DOMAINS =================
 AMAZON_DOMAINS = {
     "Egypt 🇪🇬 (.eg)": "www.amazon.eg",
     "USA 🇺🇸 (.com)": "www.amazon.com",
@@ -32,24 +31,14 @@ AMAZON_DOMAINS = {
     "France 🇫🇷 (.fr)": "www.amazon.fr",
     "Italy 🇮🇹 (.it)": "www.amazon.it",
     "Spain 🇪🇸 (.es)": "www.amazon.es",
-    "Netherlands 🇳🇱 (.nl)": "www.amazon.nl",
-    "Poland 🇵🇱 (.pl)": "www.amazon.pl",
-    "Sweden 🇸🇪 (.se)": "www.amazon.se",
-    "Turkey 🇹🇷 (.com.tr)": "www.amazon.com.tr",
-    "India 🇮🇳 (.in)": "www.amazon.in",
-    "Japan 🇯🇵 (.co.jp)": "www.amazon.co.jp",
-    "Canada 🇨🇦 (.ca)": "www.amazon.ca",
-    "Australia 🇦🇺 (.com.au)": "www.amazon.com.au",
-    "Singapore 🇸🇬 (.sg)": "www.amazon.sg",
-    "Brazil 🇧🇷 (.com.br)": "www.amazon.com.br",
-    "Mexico 🇲🇽 (.com.mx)": "www.amazon.com.mx",
-    "South Africa 🇿🇦 (.co.za)": "www.amazon.co.za"
+    "India 🇮🇳 (.in)": "www.amazon.in"
 }
 
 # ================= DRIVER =================
 def get_driver():
     options = Options()
-    # options.add_argument('--headless')  # disable if blocked
+    # options.add_argument('--headless')  # enable if needed
+
     options.add_argument('--no-sandbox')
     options.add_argument('--disable-dev-shm-usage')
     options.add_argument('--disable-gpu')
@@ -81,11 +70,8 @@ def get_text(driver, selectors):
             continue
     return ""
 
-def build_product_url(asin, domain):
-    return f"https://{domain}/dp/{asin}"
-
 def build_urls_from_asins(asins, domain):
-    return [build_product_url(a.strip().split("/")[-1], domain) for a in asins]
+    return [f"https://{domain}/dp/{a.strip()}" for a in asins]
 
 def clean_urls(urls):
     asins = []
@@ -121,8 +107,6 @@ def get_product(driver, url):
     title = get_text(driver, ["#productTitle"])
     brand = get_text(driver, ["#bylineInfo", "#brand"])
 
-    breadcrumb = [a.text.strip() for a in driver.find_elements(By.CSS_SELECTOR, "#wayfinding-breadcrumbs_feature_div a")]
-
     bullets = [li.text.strip() for li in driver.find_elements(By.CSS_SELECTOR, "#feature-bullets li") if li.text.strip()]
 
     description = get_text(driver, [
@@ -137,7 +121,6 @@ def get_product(driver, url):
         "URL": url,
         "Title": title,
         "Brand": brand,
-        "Breadcrumb": ", ".join(breadcrumb),
         "About": "; ".join(bullets),
         "Description": description,
         **{f"Image {i+1}": img for i, img in enumerate(images)}
@@ -156,7 +139,7 @@ def extract_seller(driver, seller_url, domain):
         for item in items:
             asin = item.get_attribute("data-asin")
             if asin:
-                urls.append(build_product_url(asin, domain))
+                urls.append(f"https://{domain}/dp/{asin}")
 
         try:
             next_btn = driver.find_element(By.CSS_SELECTOR, "a.s-pagination-next")
@@ -169,18 +152,24 @@ def extract_seller(driver, seller_url, domain):
     return list(set(urls))
 
 # ================= UI =================
-mode = st.selectbox("Mode", ["ASINs", "Product URLs", "Seller Store"])
+mode = st.selectbox("Select Mode", ["ASINs", "Product URLs", "Seller Store"])
 
-country = st.selectbox("Country", list(AMAZON_DOMAINS.keys()))
-domain = AMAZON_DOMAINS[country]
+# 👇 ONLY show country for ASINs
+if mode == "ASINs":
+    country = st.selectbox("Select Country", list(AMAZON_DOMAINS.keys()))
+    domain = AMAZON_DOMAINS[country]
+    user_input = st.text_area("Enter ASINs (one per line)")
 
-if mode == "Seller Store":
-    seller_url = st.text_input("Seller URL")
+elif mode == "Product URLs":
+    user_input = st.text_area("Enter Product URLs (one per line)")
+    domain = None
+
 else:
-    user_input = st.text_area("Input (one per line)")
+    seller_url = st.text_input("Enter Seller Store URL")
+    domain = "www.amazon.eg"  # fallback
 
 # ================= RUN =================
-if st.button("🚀 Start"):
+if st.button("🚀 Start Scraping"):
 
     final_urls = []
 
@@ -189,9 +178,7 @@ if st.button("🚀 Start"):
         final_urls = build_urls_from_asins(asins, domain)
 
     elif mode == "Product URLs":
-        urls = [x.strip() for x in user_input.split("\n") if x.strip()]
-        asins = clean_urls(urls)
-        final_urls = build_urls_from_asins(asins, domain)
+        final_urls = [x.strip() for x in user_input.split("\n") if x.strip()]
 
     elif mode == "Seller Store":
         driver = get_driver()
