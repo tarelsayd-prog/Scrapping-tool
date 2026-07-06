@@ -6,12 +6,13 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
 from webdriver_manager.chrome import ChromeDriverManager
+from webdriver_manager.core.os_manager import ChromeType # <-- NEW: Forces Chromium compatibility
 import time
 import io
 import shutil
 import re
 import gc
-import os  # <-- Added this crucial import
+import os
 
 # --- PAGE CONFIGURATION ---
 st.set_page_config(page_title="Amazon Scraper Hub", layout="wide")
@@ -47,23 +48,23 @@ AMAZON_DOMAINS = {
 # --- SELENIUM HEADLESS SETUP (LOW MEMORY MODE) ---
 def get_driver():
     options = Options()
-    options.add_argument('--headless')
+    options.add_argument('--headless=new') # <-- FIX: Required for newer Chromium versions
     options.add_argument('--no-sandbox')
-    options.add_argument('--disable-dev-shm-usage') # Crucial for low-RAM Linux servers
+    options.add_argument('--disable-dev-shm-usage') 
     options.add_argument('--disable-gpu')
-    options.add_argument('--disable-extensions')    # Strips out extra memory usage
+    options.add_argument('--disable-extensions')    
     options.add_argument('--disable-infobars')
     options.add_argument('--window-size=1920,1080')
     options.add_argument('--disable-blink-features=AutomationControlled')
     options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36")
     
-    # <-- FIX APPLIED HERE: Force Streamlit Cloud to use its own installed Linux packages
-    if os.path.exists('/usr/bin/chromium') and os.path.exists('/usr/bin/chromedriver'):
-        options.binary_location = '/usr/bin/chromium'
-        service = Service('/usr/bin/chromedriver')
-    else:
-        # Fallback if you run this locally on your own Windows/Mac computer
-        service = Service(ChromeDriverManager().install())
+    # <-- FIX: Dynamically find where Streamlit installed Chromium
+    chromium_path = shutil.which('chromium') or shutil.which('chromium-browser')
+    if chromium_path:
+        options.binary_location = chromium_path
+        
+    # <-- FIX: Strictly force the driver to match Chromium, NOT Google Chrome
+    service = Service(ChromeDriverManager(chrome_type=ChromeType.CHROMIUM).install())
         
     return webdriver.Chrome(service=service, options=options)
 
@@ -84,7 +85,6 @@ def extract_seller_urls(driver, seller_url, status_element):
         for item in items:
             asin = item.get_attribute("data-asin")
             if asin and len(asin) > 5:
-                # Extract links based on the Egyptian storefront domain for Option 2
                 product_urls.append(f"https://www.amazon.eg/dp/{asin}")
                 page_items_count += 1
                 
