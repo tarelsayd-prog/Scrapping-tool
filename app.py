@@ -11,6 +11,7 @@ import io
 import shutil
 import re
 import gc
+import os  # <-- Added this crucial import
 
 # --- PAGE CONFIGURATION ---
 st.set_page_config(page_title="Amazon Scraper Hub", layout="wide")
@@ -56,13 +57,12 @@ def get_driver():
     options.add_argument('--disable-blink-features=AutomationControlled')
     options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36")
     
-    chromium_path = shutil.which('chromium')
-    chromedriver_path = shutil.which('chromedriver')
-    
-    if chromium_path and chromedriver_path:
-        options.binary_location = chromium_path
-        service = Service(chromedriver_path)
+    # <-- FIX APPLIED HERE: Force Streamlit Cloud to use its own installed Linux packages
+    if os.path.exists('/usr/bin/chromium') and os.path.exists('/usr/bin/chromedriver'):
+        options.binary_location = '/usr/bin/chromium'
+        service = Service('/usr/bin/chromedriver')
     else:
+        # Fallback if you run this locally on your own Windows/Mac computer
         service = Service(ChromeDriverManager().install())
         
     return webdriver.Chrome(service=service, options=options)
