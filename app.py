@@ -48,24 +48,25 @@ AMAZON_DOMAINS = {
 # --- SELENIUM HEADLESS SETUP (LOW MEMORY MODE) ---
 def get_driver():
     options = Options()
-    options.add_argument('--headless=new') 
+    options.add_argument('--headless') 
     options.add_argument('--no-sandbox')
     options.add_argument('--disable-dev-shm-usage') 
     options.add_argument('--disable-gpu')
     options.add_argument('--disable-extensions')    
     options.add_argument('--disable-infobars')
+    options.add_argument('--disable-features=NetworkService')
+    options.add_argument('--disable-features=VizDisplayCompositor')
     options.add_argument('--window-size=1920,1080')
     options.add_argument('--disable-blink-features=AutomationControlled')
     options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36")
     
-    # CRITICAL FIX: Bypass webdriver-manager completely on Streamlit Cloud.
-    # We force it to use the perfectly matched packages we installed via packages.txt
-    if os.path.exists('/usr/bin/chromium') and os.path.exists('/usr/bin/chromedriver'):
-        options.binary_location = '/usr/bin/chromium'
-        service = Service('/usr/bin/chromedriver')
-    else:
-        # Fallback only used if you run this locally on your own Windows/Mac PC
-        service = Service(ChromeDriverManager(chrome_type=ChromeType.CHROMIUM).install())
+    # 1. Dynamically locate the Chromium browser installed by Streamlit's packages.txt
+    chromium_path = shutil.which('chromium') or shutil.which('chromium-browser') or '/usr/bin/chromium'
+    options.binary_location = chromium_path
+
+    # 2. Ignore the server's broken chromedriver. 
+    # Force webdriver_manager to download the exact matching driver for the installed Chromium version.
+    service = Service(ChromeDriverManager(chrome_type=ChromeType.CHROMIUM).install())
         
     return webdriver.Chrome(service=service, options=options)
 
