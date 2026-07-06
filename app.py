@@ -6,7 +6,7 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
 from webdriver_manager.chrome import ChromeDriverManager
-from webdriver_manager.core.os_manager import ChromeType # <-- NEW: Forces Chromium compatibility
+from webdriver_manager.core.os_manager import ChromeType
 import time
 import io
 import shutil
@@ -48,7 +48,7 @@ AMAZON_DOMAINS = {
 # --- SELENIUM HEADLESS SETUP (LOW MEMORY MODE) ---
 def get_driver():
     options = Options()
-    options.add_argument('--headless=new') # <-- FIX: Required for newer Chromium versions
+    options.add_argument('--headless=new') 
     options.add_argument('--no-sandbox')
     options.add_argument('--disable-dev-shm-usage') 
     options.add_argument('--disable-gpu')
@@ -58,13 +58,14 @@ def get_driver():
     options.add_argument('--disable-blink-features=AutomationControlled')
     options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36")
     
-    # <-- FIX: Dynamically find where Streamlit installed Chromium
-    chromium_path = shutil.which('chromium') or shutil.which('chromium-browser')
-    if chromium_path:
-        options.binary_location = chromium_path
-        
-    # <-- FIX: Strictly force the driver to match Chromium, NOT Google Chrome
-    service = Service(ChromeDriverManager(chrome_type=ChromeType.CHROMIUM).install())
+    # CRITICAL FIX: Bypass webdriver-manager completely on Streamlit Cloud.
+    # We force it to use the perfectly matched packages we installed via packages.txt
+    if os.path.exists('/usr/bin/chromium') and os.path.exists('/usr/bin/chromedriver'):
+        options.binary_location = '/usr/bin/chromium'
+        service = Service('/usr/bin/chromedriver')
+    else:
+        # Fallback only used if you run this locally on your own Windows/Mac PC
+        service = Service(ChromeDriverManager(chrome_type=ChromeType.CHROMIUM).install())
         
     return webdriver.Chrome(service=service, options=options)
 
@@ -217,7 +218,7 @@ if st.button("Run Extraction Pipeline", type="primary"):
     final_urls = []
     should_continue = True
     
-    # 1. Input Processing Phase (No browser needed yet)
+    # 1. Input Processing Phase 
     if "Option 1" in scrape_mode:
         raw_inputs = []
         if urls_input:
@@ -263,10 +264,10 @@ if st.button("Run Extraction Pipeline", type="primary"):
                     final_urls = extract_seller_urls(storefront_driver, seller_input, status_text)
                     st.info(f"🏬 Storefront Map Complete: Discovered **{len(final_urls)}** target products.")
             finally:
-                storefront_driver.quit() # Close browser after mapping
+                storefront_driver.quit() 
                 gc.collect()
 
-        # Phase B: Deep Detail Scraping (EXTREME MEMORY SAVER)
+        # Phase B: Deep Detail Scraping
         if not final_urls:
             st.warning("No operational URLs located. Check inputs.")
         else:
@@ -276,14 +277,14 @@ if st.button("Run Extraction Pipeline", type="primary"):
             for index, url in enumerate(final_urls):
                 status_text.text(f"📦 Progress: Processing item {index + 1} of {len(final_urls)} → {url}")
                 
-                # CRITICAL: Open a clean browser instance for EVERY single page
+                # Open a clean browser instance for EVERY single page
                 single_driver = get_driver()
                 try:
                     results.append(get_product_details(single_driver, url))
                 except Exception as e:
                     st.error(f"Failed asset pull on {url}: {e}")
                 finally:
-                    # CRITICAL: Instantly kill the browser and wipe memory after each item
+                    # Instantly kill the browser and wipe memory
                     single_driver.quit()
                     gc.collect()
                 
