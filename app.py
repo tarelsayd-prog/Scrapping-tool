@@ -6,20 +6,38 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
 from webdriver_manager.chrome import ChromeDriverManager
-from webdriver_manager.core.os_manager import ChromeType
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
 import time
 import io
 import shutil
 import re
 import gc
 import os
+import random
 
+# ================= CONFIG =================
+st.set_page_config(page_title="Amazon Scraper", layout="wide")
+st.title("🛒 Amazon Scraper")
 # --- PAGE CONFIGURATION ---
 st.set_page_config(page_title="Amazon Scraper Hub", layout="wide")
 st.title("🛒 Amazon Global Automated Scraper")
 
+TEMP_FILE = "temp_progress.xlsx"
+
+# ================= DOMAINS =================
 # --- AMAZON GLOBAL DOMAINS ---
 AMAZON_DOMAINS = {
+    "Egypt 🇪🇬 (.eg)": "www.amazon.eg",
+    "USA 🇺🇸 (.com)": "www.amazon.com",
+    "UK 🇬🇧 (.co.uk)": "www.amazon.co.uk",
+    "UAE 🇦🇪 (.ae)": "www.amazon.ae",
+    "Saudi 🇸🇦 (.sa)": "www.amazon.sa",
+    "Germany 🇩🇪 (.de)": "www.amazon.de",
+    "France 🇫🇷 (.fr)": "www.amazon.fr",
+    "Italy 🇮🇹 (.it)": "www.amazon.it",
+    "Spain 🇪🇸 (.es)": "www.amazon.es",
+    "India 🇮🇳 (.in)": "www.amazon.in"
     "Egypt (.eg)": "www.amazon.eg",
     "United States (.com)": "www.amazon.com",
     "Canada (.ca)": "www.amazon.ca",
@@ -45,28 +63,123 @@ AMAZON_DOMAINS = {
     "Australia (.com.au)": "www.amazon.com.au"
 }
 
+# ================= DRIVER =================
 # --- SELENIUM HEADLESS SETUP (LOW MEMORY MODE) ---
 def get_driver():
-    options = Options()
-    options.add_argument('--headless') 
-    options.add_argument('--no-sandbox')
-    options.add_argument('--disable-dev-shm-usage') 
-    options.add_argument('--disable-gpu')
-    options.add_argument('--disable-extensions')    
+options = Options()
+    # options.add_argument('--headless')  # enable if needed
+
+    options.add_argument('--headless')
+options.add_argument('--no-sandbox')
+    options.add_argument('--disable-dev-shm-usage')
+    options.add_argument('--disable-dev-shm-usage') # Crucial for low-RAM Linux servers
+options.add_argument('--disable-gpu')
+    options.add_argument('--disable-extensions')    # Strips out extra memory usage
     options.add_argument('--disable-infobars')
-    options.add_argument('--disable-features=NetworkService')
-    options.add_argument('--disable-features=VizDisplayCompositor')
-    options.add_argument('--window-size=1920,1080')
+options.add_argument('--window-size=1920,1080')
+    options.add_argument("--disable-blink-features=AutomationControlled")
+    options.add_argument("user-agent=Mozilla/5.0")
+
+    return webdriver.Chrome(
+        service=Service(ChromeDriverManager().install()),
+        options=options
+    )
+
+# ================= HELPERS =================
+def wait_for_page(driver):
+    try:
+        WebDriverWait(driver, 10).until(
+            EC.presence_of_element_located((By.ID, "productTitle"))
+        )
+    except:
+        pass
+
+def get_text(driver, selectors):
+    for sel in selectors:
+        try:
+            el = driver.find_element(By.CSS_SELECTOR, sel)
+            if el.text.strip():
+                return el.text.strip()
+        except:
+            continue
+    return ""
+
+def build_urls_from_asins(asins, domain):
+    return [f"https://{domain}/dp/{a.strip()}" for a in asins]
+
+def clean_urls(urls):
+    asins = []
+    for url in urls:
+        if "/dp/" in url:
+            asin = url.split("/dp/")[1].split("/")[0]
+            asins.append(asin)
+    return asins
+
+# ================= IMAGES =================
+def get_images(driver):
+    images = set()
+
+    for img in driver.find_elements(By.CSS_SELECTOR, "img"):
+        data = img.get_attribute("data-a-dynamic-image")
+        if data:
+            matches = re.findall(r'"(https:[^"]+)"', data)
+            images.update(matches)
+
+    for img in driver.find_elements(By.CSS_SELECTOR, "#altImages img"):
+        src = img.get_attribute("src")
+        if src:
+            images.add(re.sub(r"\._.*_\.", ".", src))
+
+    return list(images)[:7]
+
+# ================= PRODUCT =================
+def get_product(driver, url):
+    driver.get(url)
+    wait_for_page(driver)
+    time.sleep(random.uniform(2, 4))
+
+    title = get_text(driver, ["#productTitle"])
+    brand = get_text(driver, ["#bylineInfo", "#brand"])
+
+    bullets = [li.text.strip() for li in driver.find_elements(By.CSS_SELECTOR, "#feature-bullets li") if li.text.strip()]
+
+    description = get_text(driver, [
+        "#productDescription",
+        "#aplus_feature_div",
+        "#feature-bullets"
+    ])
+
+    images = get_images(driver)
+
+    return {
+        "URL": url,
+        "Title": title,
+        "Brand": brand,
+        "About": "; ".join(bullets),
+        "Description": description,
+        **{f"Image {i+1}": img for i, img in enumerate(images)}
+    }
+
+# ================= SELLER =================
+def extract_seller(driver, seller_url, domain):
+    urls = []
+    page = seller_url
+
+    while page:
+        driver.get(page)
+        time.sleep(4)
+
     options.add_argument('--disable-blink-features=AutomationControlled')
     options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36")
     
-    # 1. Dynamically locate the Chromium browser installed by Streamlit's packages.txt
-    chromium_path = shutil.which('chromium') or shutil.which('chromium-browser') or '/usr/bin/chromium'
-    options.binary_location = chromium_path
-
-    # 2. Ignore the server's broken chromedriver. 
-    # Force webdriver_manager to download the exact matching driver for the installed Chromium version.
-    service = Service(ChromeDriverManager(chrome_type=ChromeType.CHROMIUM).install())
+    chromium_path = shutil.which('chromium')
+    chromedriver_path = shutil.which('chromedriver')
+    
+    if chromium_path and chromedriver_path:
+        options.binary_location = chromium_path
+        service = Service(chromedriver_path)
+    else:
+        service = Service(ChromeDriverManager().install())
         
     return webdriver.Chrome(service=service, options=options)
 
@@ -81,19 +194,25 @@ def extract_seller_urls(driver, seller_url, status_element):
         driver.get(current_url)
         time.sleep(5)
         
-        items = driver.find_elements(By.CSS_SELECTOR, "div[data-asin]")
+items = driver.find_elements(By.CSS_SELECTOR, "div[data-asin]")
         page_items_count = 0 
         
-        for item in items:
-            asin = item.get_attribute("data-asin")
+for item in items:
+asin = item.get_attribute("data-asin")
+            if asin:
+                urls.append(f"https://{domain}/dp/{asin}")
+
             if asin and len(asin) > 5:
+                # Extract links based on the Egyptian storefront domain for Option 2
                 product_urls.append(f"https://www.amazon.eg/dp/{asin}")
                 page_items_count += 1
                 
         if page_items_count == 0:
             break
             
-        try:
+try:
+            next_btn = driver.find_element(By.CSS_SELECTOR, "a.s-pagination-next")
+            if "disabled" in next_btn.get_attribute("class"):
             next_button = driver.find_elements(By.CSS_SELECTOR, "a.s-pagination-next")
             if next_button and "s-pagination-disabled" not in next_button[0].get_attribute("class"):
                 current_url = next_button[0].get_attribute("href")
@@ -127,8 +246,25 @@ def get_real_amazon_images(driver):
                 if hires: image_urls.extend(hires)
                 elif large: image_urls.extend(large)
                 elif main: image_urls.extend(main)
-                break
+break
+            page = next_btn.get_attribute("href")
+        except:
+            break
 
+    return list(set(urls))
+
+# ================= UI =================
+mode = st.selectbox("Select Mode", ["ASINs", "Product URLs", "Seller Store"])
+
+# 👇 ONLY show country for ASINs
+if mode == "ASINs":
+    country = st.selectbox("Select Country", list(AMAZON_DOMAINS.keys()))
+    domain = AMAZON_DOMAINS[country]
+    user_input = st.text_area("Enter ASINs (one per line)")
+
+elif mode == "Product URLs":
+    user_input = st.text_area("Enter Product URLs (one per line)")
+    domain = None
         if not image_urls:
             thumbnails = driver.find_elements(By.CSS_SELECTOR, "#altImages img")
             for img in thumbnails:
@@ -209,24 +345,81 @@ if "Option 1" in scrape_mode:
     with col2:
         uploaded_file = st.file_uploader(f"Or upload an Excel / CSV file containing {input_format}", type=['csv', 'xlsx'])
 else:
+    seller_url = st.text_input("Enter Seller Store URL")
+    domain = "www.amazon.eg"  # fallback
     seller_input = st.text_input("Paste Amazon Seller Storefront URL (e.g., https://www.amazon.eg/s?me=...):")
 
+# ================= RUN =================
+if st.button("🚀 Start Scraping"):
 st.divider()
 
 # --- EXECUTION ENGINE ---
 if st.button("Run Extraction Pipeline", type="primary"):
     status_text = st.empty()
-    final_urls = []
+final_urls = []
+
+    if mode == "ASINs":
+        asins = [x.strip() for x in user_input.split("\n") if x.strip()]
+        final_urls = build_urls_from_asins(asins, domain)
+
+    elif mode == "Product URLs":
+        final_urls = [x.strip() for x in user_input.split("\n") if x.strip()]
+
+    elif mode == "Seller Store":
+        driver = get_driver()
+        final_urls = extract_seller(driver, seller_url, domain)
+        driver.quit()
+
+    if not final_urls:
+        st.warning("No URLs found")
+        st.stop()
+
+    # ===== RESUME =====
+    if os.path.exists(TEMP_FILE):
+        df_old = pd.read_excel(TEMP_FILE)
+        done = set(df_old["URL"])
+        final_urls = [u for u in final_urls if u not in done]
+        results = df_old.to_dict("records")
+        st.info(f"Resuming... {len(done)} already done")
+    else:
+        results = []
+
+    progress = st.progress(0)
+
+    for i, url in enumerate(final_urls):
+        st.write(f"{i+1}/{len(final_urls)}")
+
+        for _ in range(2):
+            driver = get_driver()
     should_continue = True
     
-    # 1. Input Processing Phase 
+    # 1. Input Processing Phase (No browser needed yet)
     if "Option 1" in scrape_mode:
         raw_inputs = []
         if urls_input:
             raw_inputs.extend([val.strip() for val in urls_input.split('\n') if val.strip()])
             
         if uploaded_file is not None:
-            try:
+try:
+                data = get_product(driver, url)
+                results.append(data)
+                driver.quit()
+                break
+            except:
+                driver.quit()
+
+        pd.DataFrame(results).to_excel(TEMP_FILE, index=False)
+
+        progress.progress((i + 1) / len(final_urls))
+        gc.collect()
+
+    df = pd.DataFrame(results)
+    st.dataframe(df)
+
+    buffer = io.BytesIO()
+    df.to_excel(buffer, index=False)
+
+    st.download_button("📥 Download Excel", buffer.getvalue(), "amazon.xlsx")
                 df_input = pd.read_csv(uploaded_file) if uploaded_file.name.endswith('.csv') else pd.read_excel(uploaded_file)
                 col_names_to_check = ['url', 'urls', 'link', 'links', 'asin', 'asins']
                 val_col = next((col for col in df_input.columns if str(col).strip().lower() in col_names_to_check), df_input.columns[0])
@@ -265,10 +458,10 @@ if st.button("Run Extraction Pipeline", type="primary"):
                     final_urls = extract_seller_urls(storefront_driver, seller_input, status_text)
                     st.info(f"🏬 Storefront Map Complete: Discovered **{len(final_urls)}** target products.")
             finally:
-                storefront_driver.quit() 
+                storefront_driver.quit() # Close browser after mapping
                 gc.collect()
 
-        # Phase B: Deep Detail Scraping
+        # Phase B: Deep Detail Scraping (EXTREME MEMORY SAVER)
         if not final_urls:
             st.warning("No operational URLs located. Check inputs.")
         else:
@@ -278,14 +471,14 @@ if st.button("Run Extraction Pipeline", type="primary"):
             for index, url in enumerate(final_urls):
                 status_text.text(f"📦 Progress: Processing item {index + 1} of {len(final_urls)} → {url}")
                 
-                # Open a clean browser instance for EVERY single page
+                # CRITICAL: Open a clean browser instance for EVERY single page
                 single_driver = get_driver()
                 try:
                     results.append(get_product_details(single_driver, url))
                 except Exception as e:
                     st.error(f"Failed asset pull on {url}: {e}")
                 finally:
-                    # Instantly kill the browser and wipe memory
+                    # CRITICAL: Instantly kill the browser and wipe memory after each item
                     single_driver.quit()
                     gc.collect()
                 
